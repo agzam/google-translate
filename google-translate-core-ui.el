@@ -673,6 +673,17 @@ clicked."
         (language (button-get button 'language)))
     (google-translate-listen-translation language text)))
 
+(defvar google-translate--listen-process nil
+  "Process playing the current listen request.")
+
+(defun google-translate--stop-listening ()
+  "Stop the listen playback in progress, if any."
+  (let ((process google-translate--listen-process))
+    ;; Cleared first: `delete-process' runs a pending sentinel on the spot.
+    (setq google-translate--listen-process nil)
+    (when process
+      (delete-process process))))
+
 (defun google-translate--play-urls (urls &optional command)
   "Play URLS in turn, one process per url running COMMAND plus the url.
 COMMAND defaults to the listen program and its args; ffplay accepts a
@@ -685,11 +696,13 @@ single input.  Return the process playing the first url."
                            (append command (list (car urls))))))
       (process-put process 'google-translate-pending-urls (cdr urls))
       (set-process-sentinel process 'google-translate--play-next-url)
-      process)))
+      (setq google-translate--listen-process process))))
 
 (defun google-translate--play-next-url (process _event)
-  "Play the urls left after PROCESS with its command, if it exited cleanly."
-  (when (and (eq (process-status process) 'exit)
+  "Play the urls left after PROCESS with its command, if it exited cleanly.
+Playback that a newer listen request stopped does not continue."
+  (when (and (eq process google-translate--listen-process)
+             (eq (process-status process) 'exit)
              (zerop (process-exit-status process)))
     (google-translate--play-urls
      (process-get process 'google-translate-pending-urls)
@@ -702,11 +715,13 @@ single input.  Return the process playing the first url."
 Retrieves audio from Google Translate's text-to-speech service
 and plays it using `google-translate-listen-program' with
 optional arguments from `google-translate-listen-program-args'.
+Stops any playback still running first.
 
 LANGUAGE is the language code (e.g., \"en\", \"es\", \"fr\").
 TEXT is the string to be spoken."
   (let ((buf (format "*%s output*" google-translate-listen-program))
         (urls (google-translate-format-listen-urls text language)))
+    (google-translate--stop-listening)
     (message "Retrieving audio message...")
     (if google-translate-translation-listening-debug
         (with-current-buffer (get-buffer-create buf)
