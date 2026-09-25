@@ -322,8 +322,13 @@ You can use any other suitable program."
   :group 'google-translate-core-ui
   :type '(string))
 
-(defcustom google-translate-listen-program-args '("-nodisp" "-autoexit" "-loglevel" "quiet")
-  "Arguments to pass to the listen program before the urls."
+(defcustom google-translate-listen-program-args
+  '("-nodisp" "-autoexit" "-loglevel" "quiet" "-multiple_requests" "1")
+  "Arguments to pass to the listen program before the url.
+
+-multiple_requests stops ffplay's HTTP reader from ending Google's
+chunked audio response with an I/O error, which -autoexit treats as
+fatal, cutting off the audio still queued."
   :group 'google-translate-core-ui
   :type '(repeat string))
 
@@ -668,6 +673,28 @@ clicked."
         (language (button-get button 'language)))
     (google-translate-listen-translation language text)))
 
+(defun google-translate--play-urls (urls &optional command)
+  "Play URLS in turn, one process per url running COMMAND plus the url.
+COMMAND defaults to the listen program and its args; ffplay accepts a
+single input.  Return the process playing the first url."
+  (when urls
+    (let* ((command (or command
+                        (cons google-translate-listen-program
+                              google-translate-listen-program-args)))
+           (process (apply 'start-process "google-translate-listen" nil
+                           (append command (list (car urls))))))
+      (process-put process 'google-translate-pending-urls (cdr urls))
+      (set-process-sentinel process 'google-translate--play-next-url)
+      process)))
+
+(defun google-translate--play-next-url (process _event)
+  "Play the urls left after PROCESS with its command, if it exited cleanly."
+  (when (and (eq (process-status process) 'exit)
+             (zerop (process-exit-status process)))
+    (google-translate--play-urls
+     (process-get process 'google-translate-pending-urls)
+     (butlast (process-command process)))))
+
 
 (defun google-translate-listen-translation (language text)
   "Play audio of TEXT spoken in LANGUAGE using external program.
@@ -685,13 +712,11 @@ TEXT is the string to be spoken."
         (with-current-buffer (get-buffer-create buf)
           (insert (format "Listen program: %s\r\n" google-translate-listen-program))
           (mapc (lambda (x) (insert (format "Listen URL: %s\r\n" x))) urls)
-          (apply 'call-process google-translate-listen-program nil t nil
-                 (append google-translate-listen-program-args urls))
+          (dolist (url urls)
+            (apply 'call-process google-translate-listen-program nil t nil
+                   (append google-translate-listen-program-args (list url))))
           (switch-to-buffer buf))
-      ;; Use start-process for non-blocking playback
-      (apply 'start-process "google-translate-listen" nil
-             google-translate-listen-program
-             (append google-translate-listen-program-args urls)))))
+      (google-translate--play-urls urls))))
 
 
 (defun google-translate-translate (source-language target-language text &optional output-destination)
