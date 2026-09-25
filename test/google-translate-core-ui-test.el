@@ -152,7 +152,8 @@
 
 (ert-deftest test-google-translate--play-urls/one-process-per-url-in-order ()
   ;; The chain outlives the let: later urls must reuse the first command.
-  (let ((log (make-temp-file "google-translate-listen")))
+  (let ((log (make-temp-file "google-translate-listen"))
+        (google-translate--listen-process nil))
     (unwind-protect
         (progn
           (let ((google-translate-listen-program "sh")
@@ -174,15 +175,40 @@
     process))
 
 (ert-deftest test-google-translate--play-next-url/plays-remaining-urls ()
-  (let ((process (th-google-translate-exited-process "true" "url1")))
+  (let* ((process (th-google-translate-exited-process "true" "url1"))
+         (google-translate--listen-process process))
     (process-put process 'google-translate-pending-urls '("url2"))
     (with-mock
      (mock (google-translate--play-urls '("url2") '("true")))
      (google-translate--play-next-url process "finished\n"))))
 
 (ert-deftest test-google-translate--play-next-url/stops-when-playback-fails ()
-  (let ((process (th-google-translate-exited-process "false" "url1")))
+  (let* ((process (th-google-translate-exited-process "false" "url1"))
+         (google-translate--listen-process process))
     (process-put process 'google-translate-pending-urls '("url2"))
     (with-mock
      (not-called google-translate--play-urls)
      (google-translate--play-next-url process "exited abnormally\n"))))
+
+(ert-deftest test-google-translate--play-next-url/ignores-superseded-playback ()
+  (let ((process (th-google-translate-exited-process "true" "url1"))
+        (google-translate--listen-process nil))
+    (process-put process 'google-translate-pending-urls '("url2"))
+    (with-mock
+     (not-called google-translate--play-urls)
+     (google-translate--play-next-url process "finished\n"))))
+
+(ert-deftest test-google-translate-listen-translation/stops-previous-playback ()
+  (let ((google-translate-listen-program "sh")
+        (google-translate-listen-program-args '("-c" "sleep 10"))
+        (google-translate--listen-process nil))
+    (with-mock
+     (stub google-translate-format-listen-urls => '("url1" "url2"))
+     (let* ((previous (google-translate-listen-translation "en" "one"))
+            (current (google-translate-listen-translation "en" "two")))
+       (unwind-protect
+           (progn
+             (should-not (process-live-p previous))
+             (should (process-live-p current))
+             (should (eq google-translate--listen-process current)))
+         (google-translate--stop-listening))))))
