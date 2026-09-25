@@ -143,3 +143,46 @@
     (string-equal
      (google-translate-read-source-language)
      "en"))))
+
+(ert-deftest test-google-translate-listen-program-args/keeps-http-connection ()
+  (let ((args (eval (car (get 'google-translate-listen-program-args
+                              'standard-value)))))
+    (should (member "-autoexit" args))
+    (should (equal (cadr (member "-multiple_requests" args)) "1"))))
+
+(ert-deftest test-google-translate--play-urls/one-process-per-url-in-order ()
+  ;; The chain outlives the let: later urls must reuse the first command.
+  (let ((log (make-temp-file "google-translate-listen")))
+    (unwind-protect
+        (progn
+          (let ((google-translate-listen-program "sh")
+                (google-translate-listen-program-args
+                 (list "-c" (format "echo \"$0\" >> %s"
+                                    (shell-quote-argument log)))))
+            (google-translate--play-urls '("url1" "url2")))
+          (with-timeout (5 (ert-fail (format "played: %S" (f-read log))))
+            (while (not (equal (f-read log) "url1\nurl2\n"))
+              (accept-process-output nil 0.05))))
+      (delete-file log))))
+
+(defun th-google-translate-exited-process (program &rest args)
+  "Run PROGRAM with ARGS and return its process once it has exited."
+  (let ((process (apply 'start-process "google-translate-test" nil
+                        program args)))
+    (while (process-live-p process)
+      (accept-process-output process 0.05))
+    process))
+
+(ert-deftest test-google-translate--play-next-url/plays-remaining-urls ()
+  (let ((process (th-google-translate-exited-process "true" "url1")))
+    (process-put process 'google-translate-pending-urls '("url2"))
+    (with-mock
+     (mock (google-translate--play-urls '("url2") '("true")))
+     (google-translate--play-next-url process "finished\n"))))
+
+(ert-deftest test-google-translate--play-next-url/stops-when-playback-fails ()
+  (let ((process (th-google-translate-exited-process "false" "url1")))
+    (process-put process 'google-translate-pending-urls '("url2"))
+    (with-mock
+     (not-called google-translate--play-urls)
+     (google-translate--play-next-url process "exited abnormally\n"))))
